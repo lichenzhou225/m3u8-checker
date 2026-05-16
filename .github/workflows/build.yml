@@ -1,0 +1,33 @@
+name: Build tvm3u8 EXE
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Install pkg
+      run: npm install -g pkg
+
+    - name: Build EXE
+      run: pkg server.js --targets node16-win-x64 --output tvm3u8.exe
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: tvm3u8-windows-exe
+        path: tvm3u8.exe

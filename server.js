@@ -1,5 +1,5 @@
 // ==========================================
-// server.js 完美兼容打包版（解决 EXE 分辨率失效）
+// server.js 完美兼容打包版（优化加速版）
 // ==========================================
 
 const express = require('express');
@@ -189,23 +189,29 @@ async function getM3U8Resolution(url) {
 }
 
 // ============================
-// TS真实分辨率检测 + 重试
+// ⚡ TS真实分辨率检测 + 重试（已优化加速）
 // ============================
 async function getTSResolution(tsUrl, retries = 2) {
-    await ensureFFmpeg();
+    // 💡 关键改动1：移除此处重复的 ensureFFmpeg()，避免高并发下频繁查询磁盘阻塞线程
 
     for (let i = 0; i <= retries; i++) {
         try {
             const result = await new Promise((resolve) => {
-                ffmpeg(tsUrl).ffprobe((err, metadata) => {
-                    if (err) {
-                        console.log(`TS检测失败 第 ${i + 1} 次尝试: ${tsUrl}`);
-                        return resolve('未知');
-                    }
-                    const stream = metadata.streams.find(s => s.codec_type === 'video');
-                    if (!stream) return resolve('未知');
-                    resolve(`${stream.width}x${stream.height}`);
-                });
+                // 💡 关键改动2：注入限制探测范围和时间的参数，防止卡顿流死等
+                ffmpeg(tsUrl)
+                    .inputOptions([
+                        '-probesize 50000',       // 只探测前 50KB 数据
+                        '-analyzeduration 1000000' // 限制流分析时间最多 1 秒（单位微秒）
+                    ])
+                    .ffprobe((err, metadata) => {
+                        if (err) {
+                            console.log(`TS检测失败 第 ${i + 1} 次尝试: ${tsUrl}`);
+                            return resolve('未知');
+                        }
+                        const stream = metadata.streams.find(s => s.codec_type === 'video');
+                        if (!stream) return resolve('未知');
+                        resolve(`${stream.width}x${stream.height}`);
+                    });
             });
 
             if (result !== '未知') {
@@ -215,7 +221,7 @@ async function getTSResolution(tsUrl, retries = 2) {
         } catch (e) {
             console.log('TS异常:', e.message);
         }
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 300)); // 略微缩短网络重试等待间隔
     }
     return '未知';
 }
@@ -320,6 +326,6 @@ app.listen(PORT, () => {
     console.log(` 🌐 访问地址: http://localhost:${PORT}`);
     console.log(`====================================`);
     
-    // 初始化 FFmpeg
+    // 💡 仅在程序启动时初始化一次 FFmpeg，挂载全局路径，后续不再重复读盘
     ensureFFmpeg().catch(err => console.error("FFmpeg 初始化崩溃:", err));
 });

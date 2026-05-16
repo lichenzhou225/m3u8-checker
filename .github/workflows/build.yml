@@ -26,10 +26,7 @@ jobs:
         run: npm install -g pkg
 
       - name: Build EXE
-        run: |
-          pkg server.js ^
-          --targets node16-win-x64 ^
-          --output tvm3u8.exe
+        run: pkg server.js --targets node16-win-x64 --output tvm3u8.exe
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

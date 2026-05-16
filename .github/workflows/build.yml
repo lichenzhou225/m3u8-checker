@@ -10,24 +10,29 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: 16
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: npm install
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 16
 
-    - name: Install pkg
-      run: npm install -g pkg
+      - name: Install dependencies
+        run: npm install
 
-    - name: Build EXE
-      run: pkg server.js --targets node16-win-x64 --output tvm3u8.exe
+      - name: Install pkg
+        run: npm install -g pkg
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: tvm3u8-windows-exe
-        path: tvm3u8.exe
+      - name: Build EXE
+        run: |
+          pkg server.js ^
+          --targets node16-win-x64 ^
+          --output tvm3u8.exe
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvm3u8-windows
+          path: tvm3u8.exe

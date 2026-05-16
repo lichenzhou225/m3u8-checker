@@ -16,16 +16,17 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18 # 推荐升级到 Node 18，兼容性和网络请求表现更稳定
+          node-version: 18
 
       - name: Install dependencies
+        # 确保完整安装所有依赖，然后再执行打包
         run: |
           npm install
-          npm install -g pkg  # 全局安装打包工具
+          npm install -g pkg
 
       - name: Build EXE
-        # 这里移除 --targets 参数中的具体版本，让 pkg 根据 package.json 自动识别并抓取 assets
-        run: pkg server.js --target node18-win-x64 --output tvm3u8.exe
+        # 直接运行 package.json 里定义好的标准打包脚本
+        run: npm run pkg
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

@@ -16,7 +16,14 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-app.use(express.static('public'));
+
+const isPkg = process.pkg;
+
+const publicPath = isPkg
+    ? path.join(path.dirname(process.execPath), 'public')
+    : path.join(__dirname, 'public');
+
+app.use(express.static(publicPath));
 
 const upload = multer({ dest: 'uploads/' });
 

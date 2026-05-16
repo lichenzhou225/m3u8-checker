@@ -1,0 +1,8 @@
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const progressInner = document.getElementById('progressInner');
+const totalCountEl = document.getElementById('totalCount');
+const checkedCountEl = document.getElementById('checkedCount');
+const vCountEl = document.getElementById('vCount');
+const iCountEl = document.getElementById('iCount');
+const tbody = document.querySelector('#resultTable tbody');

@@ -135,7 +135,7 @@ async function ensureFFmpeg() {
 // ============================
 // 检测 M3U8 是否有效
 // ============================
-async function checkM3U8(url, timeout = 8000) {
+async function checkM3U8(url, timeout = 30000) {
     const controller = new AbortController();
     const timer = setTimeout(() => { controller.abort(); }, timeout);
 
@@ -201,7 +201,7 @@ async function getTSResolution(tsUrl, retries = 2) {
                 ffmpeg(tsUrl)
                     .inputOptions([
                         '-probesize 50000',       // 只探测前 50KB 数据
-                        '-analyzeduration 1000000' // 限制流分析时间最多 1 秒（单位微秒）
+                        '-analyzeduration 2000000' // 限制流分析时间最多 2 秒（单位微秒）
                     ])
                     .ffprobe((err, metadata) => {
                         if (err) {

@@ -14,6 +14,14 @@ const unzipper = require('unzipper');
 const app = express();
 const PORT = 3000;
 
+process.on('uncaughtException', err => {
+    console.error('未捕获异常:', err);
+});
+
+process.on('unhandledRejection', err => {
+    console.error('Promise异常:', err);
+});
+
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
@@ -431,7 +439,14 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 // ============================
 app.listen(PORT, () => {
 
-    console.log(`Server running: http://localhost:${PORT}`);
+    console.log(``);
+    console.log(`==============================`);
+    console.log(`M3U8 检测器启动成功`);
+    console.log(`http://localhost:${PORT}`);
+    console.log(`==============================`);
+    console.log(``);
+
+});
 
     ensureFFmpeg().catch(console.error);
 

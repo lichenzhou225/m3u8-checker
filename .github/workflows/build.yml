@@ -10,23 +10,22 @@ jobs:
     runs-on: windows-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 16
+          node-version: 18 # 推荐升级到 Node 18，兼容性和网络请求表现更稳定
 
       - name: Install dependencies
-        run: npm install
-
-      - name: Install pkg
-        run: npm install -g pkg
+        run: |
+          npm install
+          npm install -g pkg  # 全局安装打包工具
 
       - name: Build EXE
-        run: pkg server.js --targets node16-win-x64 --output tvm3u8.exe
+        # 这里移除 --targets 参数中的具体版本，让 pkg 根据 package.json 自动识别并抓取 assets
+        run: pkg server.js --target node18-win-x64 --output tvm3u8.exe
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

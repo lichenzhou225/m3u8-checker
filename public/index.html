@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>M3U8 批量检测器 - 实时版</title>
+<style>
+    body{font-family:'Segoe UI', system-ui, sans-serif;padding:20px;background:#f0f2f5;max-width: 1400px;margin: 0 auto;color:#333;}
+    .container{background:#fff;padding:25px;border-radius:12px;box-shadow:0 4px 15px rgba(0,0,0,0.05);}
+    textarea{width:100%;height:150px;margin-bottom:12px;padding:12px;box-sizing:border-box;border:1px solid #ddd;border-radius:8px;font-size:14px;resize: vertical;}
+    .controls{display:flex; flex-wrap:wrap; gap:15px; align-items:center; margin-bottom:20px; padding:18px; background:#f8f9fa; border-radius:8px; border:1px solid #eee;}
+    button{padding:10px 22px;cursor:pointer;border:none;border-radius:6px;background:#007bff;color:white;font-weight:bold;transition:all 0.2s;}
+    button:hover{background:#0056b3; transform: translateY(-1px);}
+    button:disabled{background:#ccc; cursor:not-allowed;}
+    #stopBtn{background:#dc3545;}
+    
+    .progress-section{margin: 20px 0;}
+    .progress-bar{width:100%;background:#e9ecef;height:24px;border-radius:12px;overflow:hidden;border:1px solid #dee2e6;}
+    .progress-inner{height:100%;width:0%;background:linear-gradient(90deg, #28a745, #34ce57);transition:width 0.2s ease;display:flex;align-items:center;justify-content:center;color:white;font-size:12px;font-weight:bold;}
+    
+    /* 统计栏样式 */
+    .stats-box{display:flex; gap:15px; margin-top:15px; flex-wrap: wrap; width: 100%;}
+    .stat-item{flex: 1; padding:8px 15px; border-radius:8px; background:#f8f9fa; border-left:4px solid #6c757d; font-size: 14px; text-align: center;}
+    .stat-total{border-left-color: #007bff; color: #007bff;}
+    .stat-checked{border-left-color: #17a2b8; color: #17a2b8;}
+    .stat-valid{border-left-color:#28a745; color:#28a745;}
+    .stat-invalid{border-left-color:#dc3545; color:#dc3545;}
+
+	/* 1. 确保整个表格占满容器 */
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		margin-top: 10px;
+		table-layout: fixed; /* 必须加这一行：固定布局，防止长链接把表格撑变形 */
+		background: #fff;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	/* 2. 表头样式：水平居中、垂直居中 */
+	th {
+		background: #f8f9fa;
+		color: #333;
+		font-weight: 600;
+		padding: 15px 8px;
+		text-align: center;      /* 文字水平居中 */
+		vertical-align: middle;  /* 文字垂直居中 */
+		border-bottom: 2px solid #dee2e6;
+		font-size: 14px;
+	}
+
+	/* 3. 数据行样式：统一字体大小，全部居中 */
+	#resultTable tbody td {
+		padding: 12px 8px;
+		text-align: center;      /* 数据水平居中 */
+		vertical-align: middle;  /* 数据垂直居中 */
+		border-bottom: 1px solid #eee;
+		font-size: 14px;         /* 强制所有列的字体大小统一为 14px */
+		color: #444;
+		word-break: break-all;   /* 关键：允许长链接在内部自动换行，不影响字号 */
+	}
+
+	/* 4. 状态标签微调：保证里面的文字也不换行 */
+	.status-tag {
+		padding: 5px 10px;
+		border-radius: 4px;
+		color: white;
+		font-size: 12px;
+		display: inline-block;
+		white-space: nowrap;     /* 强制标签内的文字不换行 */
+		min-width: 120px;        /* 给状态标签一个固定最小宽度，居中更好看 */
+		text-align: center;
+	}
+
+    .status-tag {
+        padding: 4px 10px;
+        border-radius: 4px;
+        color: white;
+        font-size: 11px;
+        display: inline-block;
+        white-space: nowrap;
+        min-width: 120px;
+        text-align: center;
+    }
+    .tag-valid{background:#28a745;}
+    .tag-invalid{background:#dc3545;}
+
+    .export-area{margin-top:20px;padding:20px;background:#e7f3ff;border:1px solid #b8daff;border-radius:8px;display:none;}
+    .download-btn{display:inline-block; margin:5px 10px 5px 0; padding:8px 16px; background:#fff; border:1px solid #007bff; color:#007bff; text-decoration:none; border-radius:4px; font-weight:bold;}
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h2>M3U8 直播源极速检测</h2>
+
+    <textarea id="links" placeholder="格式：频道名,链接 (每行一个)"></textarea>
+    
+    <div class="controls">
+        <div>并发: <input type="number" id="concurrency" value="5" min="1" style="width:45px"></div>
+        <div>超时: <input type="number" id="timeout" value="8000" style="width:70px"></div>
+        <label><input type="checkbox" id="enableTSResolution" checked> 精确分辨率</label>
+        <button id="startBtn">开始检测</button>
+        <button id="stopBtn" disabled>停止</button>
+        <button onclick="document.getElementById('fileInput').click()" style="background:#6c757d">导入TXT</button>
+        <input type="file" id="fileInput" style="display:none">
+    </div>
+
+    <div class="progress-section">
+        <div class="progress-bar"><div id="progressInner" class="progress-inner">0%</div></div>
+        <div class="stats-box">
+            <div id="statusMsg" class="stat-item">就绪</div>
+            <div class="stat-item stat-total">总链接数: <span id="totalCount">0</span></div>
+            <div class="stat-item stat-checked">已检测数: <span id="checkedCount">0</span></div>
+            <div class="stat-item stat-valid">有效: <span id="vCount">0</span></div>
+            <div class="stat-item stat-invalid">无效: <span id="iCount">0</span></div>
+        </div>
+    </div>
+
+    <div id="exportArea" class="export-area">
+        <strong>✅ 检测完成！结果已自动分类保存：</strong><br><br>
+        <div id="downloadLinks"></div>
+    </div>
+
+    <table id="resultTable">
+		<thead>
+			<tr>
+				<th width="5%">#</th>
+				<th width="15%">频道名称</th>
+				<th width="45%">直播链接</th>
+				<th width="20%">检测状态</th>
+				<th width="15%">分辨率</th>
+			</tr>
+		</thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<script>
+let isStopped = false;
+let allResults = [];
+
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const progressInner = document.getElementById('progressInner');
+const totalCountEl = document.getElementById('totalCount');
+const checkedCountEl = document.getElementById('checkedCount');
+const vCountEl = document.getElementById('vCount');
+const iCountEl = document.getElementById('iCount');
+const tbody = document.querySelector('#resultTable tbody');
+
+function addRowToTable(item, index) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td>${index + 1}</td>
+        <td>${item.name || '未命名'}</td>
+        <td>${item.url}</td> 
+        <td><span class="status-tag ${item.valid ? 'tag-valid' : 'tag-invalid'}">${item.msg}</span></td>
+        <td>${item.resolutions.join(', ') || '-'}</td>
+    `;
+    tbody.insertBefore(tr, tbody.firstChild);
+}
+
+async function triggerAutoExport() {
+    if (allResults.length === 0) return;
+    try {
+        const resp = await fetch('/export', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ results: allResults })
+        });
+        const data = await resp.json();
+        if(data.exportData) {
+            const area = document.getElementById('exportArea');
+            const linksDiv = document.getElementById('downloadLinks');
+            area.style.display = 'block';
+            linksDiv.innerHTML = '';
+            data.exportData.forEach(file => {
+                const txtName = file.txt.split(/[\\/]/).pop();
+                const m3uName = file.m3u.split(/[\\/]/).pop();
+                linksDiv.innerHTML += `
+                    <div style="margin-bottom:10px;">
+                        <span>📦 ${file.resolution} (${file.count}条): </span>
+                        <a class="download-btn" href="/${txtName}" target="_blank">下载 TXT</a>
+                        <a class="download-btn" href="/${m3uName}" target="_blank">下载 M3U</a>
+                    </div>
+                `;
+            });
+        }
+    } catch(e) { console.error("导出失败", e); }
+}
+
+async function startCheck() {
+    const rawLinks = document.getElementById('links').value.trim().split('\n').filter(l => l.trim());
+    if(!rawLinks.length) return alert("请输入链接");
+
+    isStopped = false;
+    allResults = [];
+    tbody.innerHTML = '';
+    document.getElementById('exportArea').style.display = 'none';
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    
+    let validCount = 0;
+    let invalidCount = 0;
+    let checkedCount = 0; // 已检测计数
+    const total = rawLinks.length;
+    
+    // 初始化统计显示
+    totalCountEl.textContent = total;
+    checkedCountEl.textContent = 0;
+    vCountEl.textContent = 0;
+    iCountEl.textContent = 0;
+
+    const concurrency = parseInt(document.getElementById('concurrency').value);
+    const timeout = parseInt(document.getElementById('timeout').value);
+    const enableTS = document.getElementById('enableTSResolution').checked;
+
+    let currentIndex = 0;
+    async function worker() {
+        while (currentIndex < total && !isStopped) {
+            const i = currentIndex++;
+            const currentLine = rawLinks[i];
+            
+            try {
+                const res = await fetch('/check', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        links: [currentLine], 
+                        concurrency: 1, 
+                        timeout, 
+                        enableTSResolution: enableTS 
+                    })
+                });
+                const data = await res.json();
+                const result = data.results[0];
+                
+                allResults.push(result);
+                checkedCount++;
+                if(result.valid) validCount++; else invalidCount++;
+                
+                // 实时更新数据
+                addRowToTable(result, i);
+                checkedCountEl.textContent = checkedCount;
+                vCountEl.textContent = validCount;
+                iCountEl.textContent = invalidCount;
+                
+                const percent = Math.round((checkedCount / total) * 100);
+                progressInner.style.width = percent + '%';
+                progressInner.textContent = percent + '%';
+                document.getElementById('statusMsg').textContent = `正在执行...`;
+
+            } catch (e) { console.error(e); }
+        }
+    }
+
+    const workers = Array(Math.min(concurrency, total)).fill(null).map(worker);
+    await Promise.all(workers);
+
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    if(!isStopped) {
+        document.getElementById('statusMsg').textContent = "检测完成";
+        await triggerAutoExport();
+    } else {
+        document.getElementById('statusMsg').textContent = "已停止";
+    }
+}
+
+startBtn.onclick = startCheck;
+stopBtn.onclick = () => { isStopped = true; };
+
+document.getElementById('fileInput').onchange = (e) => {
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = (ev) => document.getElementById('links').value = ev.target.result;
+    reader.readAsText(file);
+};
+</script>
+</body>
+</html>

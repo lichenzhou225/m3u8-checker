@@ -1,5 +1,5 @@
 // ==========================================
-// server.js 完美兼容打包版（优化加速版）
+// server.js 完美兼容打包版（直播流截取探测版）
 // ==========================================
 
 const express = require('express');
@@ -47,10 +47,16 @@ if (isPkg) {
 const publicPath = path.join(baseDir, 'public');
 app.use(express.static(publicPath));
 
+// 创建临时的临时文件夹用于存放 2 秒的下载片段
+const tempDownloadDir = path.join(baseDir, 'temp_detect');
+if (!fs.existsSync(tempDownloadDir)) {
+    fs.mkdirSync(tempDownloadDir, { recursive: true });
+}
+
 const upload = multer({ dest: path.join(baseDir, 'uploads') });
 
 // ==========================================
-// 💡 核心修复：FFmpeg 路径不再使用不可写的 __dirname
+// 💡 FFmpeg 路径配置
 // ==========================================
 const ffmpegRoot = path.join(baseDir, 'bin');
 const ffmpegExe = path.join(ffmpegRoot, 'ffmpeg.exe');
@@ -85,7 +91,6 @@ async function ensureFFmpeg() {
         https.get(
             'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
             (res) => {
-                // 自动处理 HTTP 302 重定向
                 if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                     https.get(res.headers.location, response => response.pipe(file)).on('error', reject);
                 } else {
@@ -119,7 +124,6 @@ async function ensureFFmpeg() {
         }
     }
 
-    // 清理临时压缩包
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
 
     if (!found) {
@@ -153,11 +157,13 @@ async function checkM3U8(url, timeout = 30000) {
         if (
             text.includes('#EXTM3U') ||
             text.includes('#EXTINF') ||
-            text.includes('.ts')
+            text.includes('.ts') || 
+            text.includes('.mp4') || 
+            text.includes('#EXT-X-STREAM-INF')
         ) {
-            return { valid: true, msg: '有效 M3U8 | 媒体列表' };
+            return { valid: true, msg: '有效 M3U8 | 直播流格式' };
         }
-        return { valid: false, msg: '非M3U8内容' };
+        return { valid: false, msg: '非M3U8直播内容' };
     } catch (e) {
         return { valid: false, msg: e.message };
     } finally {
@@ -166,7 +172,7 @@ async function checkM3U8(url, timeout = 30000) {
 }
 
 // ============================
-// 主播放列表分辨率解析
+// 主播放列表分辨率解析（原基础文本解析保留作为辅助）
 // ============================
 async function getM3U8Resolution(url) {
     try {
@@ -188,42 +194,85 @@ async function getM3U8Resolution(url) {
     }
 }
 
-// ============================
-// ⚡ TS真实分辨率检测 + 重试（已优化加速）
-// ============================
-async function getTSResolution(tsUrl, retries = 2) {
-    // 💡 关键改动1：移除此处重复的 ensureFFmpeg()，避免高并发下频繁查询磁盘阻塞线程
+// ====================================================
+// ⚡ 核心修改：下载 2 秒视频，并通过 FFmpeg 分析其实际分辨率
+// ====================================================
+async function getLiveStreamResolutionByDownload(streamUrl, timeoutMs = 15000) {
+    const tempFileName = `test_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.ts`;
+    const tempFilePath = path.join(tempDownloadDir, tempFileName);
 
-    for (let i = 0; i <= retries; i++) {
-        try {
-            const result = await new Promise((resolve) => {
-                // 💡 关键改动2：注入限制探测范围和时间的参数，防止卡顿流死等
-                ffmpeg(tsUrl)
-                    .inputOptions([
-                        '-probesize 50000',       // 只探测前 50KB 数据
-                        '-analyzeduration 2000000' // 限制流分析时间最多 2 秒（单位微秒）
-                    ])
-                    .ffprobe((err, metadata) => {
-                        if (err) {
-                            console.log(`TS检测失败 第 ${i + 1} 次尝试: ${tsUrl}`);
-                            return resolve('未知');
-                        }
-                        const stream = metadata.streams.find(s => s.codec_type === 'video');
-                        if (!stream) return resolve('未知');
-                        resolve(`${stream.width}x${stream.height}`);
-                    });
-            });
+    return new Promise((resolve) => {
+        let isResolved = false;
 
-            if (result !== '未知') {
-                console.log(`TS检测成功: ${result}`);
-                return result;
+        // 强行增加定时器保护，防止某些流导致 ffmpeg 进程挂起不动
+        const killTimer = setTimeout(() => {
+            if (!isResolved) {
+                isResolved = true;
+                console.log(`[超时拦截] 直播源下载探测超时: ${streamUrl}`);
+                cleanup();
+                resolve('未知 (拉流超时)');
             }
-        } catch (e) {
-            console.log('TS异常:', e.message);
+        }, timeoutMs);
+
+        function cleanup() {
+            try {
+                if (fs.existsSync(tempFilePath)) {
+                    fs.unlinkSync(tempFilePath);
+                }
+            } catch (e) {
+                // 忽略删除失败
+            }
         }
-        await new Promise(r => setTimeout(r, 300)); // 略微缩短网络重试等待间隔
-    }
-    return '未知';
+
+        console.log(`🎬 开始下载2秒直播流进行测试: ${streamUrl}`);
+
+        // 调用 FFmpeg 录制 2 秒
+        ffmpeg(streamUrl)
+            .inputOptions([
+                '-rw_timeout 5000000', // 开启协议层超时 (5秒)
+                '-analyzeduration 1000000'
+            ])
+            .outputOptions([
+                '-t 2',            // 严格限制下载 2 秒
+                '-c copy',         // 直接拷贝流，不重新编码，极快
+                '-map 0:v:0'       // 只保留第一个视频流，加快拉流检测
+            ])
+            .output(tempFilePath)
+            .on('end', () => {
+                // 下载 2 秒成功后，利用 ffprobe 分析该本地临时文件
+                ffmpeg.ffprobe(tempFilePath, (err, metadata) => {
+                    clearTimeout(killTimer);
+                    if (isResolved) return;
+                    isResolved = true;
+
+                    if (err || !metadata || !metadata.streams) {
+                        console.log(`❌ 分析下载切片失败: ${streamUrl}`);
+                        cleanup();
+                        return resolve('解析失败');
+                    }
+
+                    const stream = metadata.streams.find(s => s.codec_type === 'video');
+                    cleanup();
+
+                    if (!stream) {
+                        return resolve('无视频流');
+                    }
+                    
+                    const resStr = `${stream.width}x${stream.height}`;
+                    console.log(`✅ 下载分析成功! 分辨率: ${resStr}`);
+                    resolve(resStr);
+                });
+            })
+            .on('error', (err) => {
+                clearTimeout(killTimer);
+                if (isResolved) return;
+                isResolved = true;
+                console.log(`❌ FFmpeg 下载流失败: ${err.message}`);
+                cleanup();
+                resolve('无法检测 (流无响应)');
+            })
+            .run();
+    });
 }
 
 // ============================
@@ -237,30 +286,30 @@ async function checkBatch(items, concurrency, timeout, enableTSResolution) {
         while (index < items.length) {
             const current = index++;
             const item = items[current];
+            
+            // 1. 初步基础检测（判断基础网络可达性与头部）
             const validResult = await checkM3U8(item.url, timeout);
             let resolutions = ['未知'];
+            let finalValid = validResult.valid;
+            let finalMsg = validResult.msg;
 
-            if (validResult.valid) {
+            if (finalValid) {
+                // 2. 获取嵌套或单分辨率标示
                 resolutions = await getM3U8Resolution(item.url);
-                if (
-                    enableTSResolution &&
-                    resolutions.length === 1 &&
-                    resolutions[0] === '单分辨率'
-                ) {
-                    try {
-                        const text = await fetch(item.url).then(r => r.text());
-                        const tsLine = text
-                            .split(/\r?\n/)
-                            .find(l => l && !l.startsWith('#'));
-
-                        if (tsLine) {
-                            const tsUrl = new URL(tsLine, item.url).href;
-                            console.log('正在精确探测 TS 流:', tsUrl);
-                            const realRes = await getTSResolution(tsUrl);
-                            resolutions = [realRes];
-                        }
-                    } catch (e) {
-                        console.log('TS流深度解析失败:', e.message);
+                
+                // 如果开启了深度检测，或者常规检测为单分辨率/未知，则执行“下载2秒探测法”
+                if (enableTSResolution || resolutions[0] === '单分辨率' || resolutions[0] === '未知') {
+                    // 直接对该直播源进行 2 秒物理拉流测试
+                    const realRes = await getLiveStreamResolutionByDownload(item.url, timeout + 5000);
+                    
+                    if (realRes.includes('失败') || realRes.includes('超时') || realRes.includes('无法检测')) {
+                        // 如果连 2 秒的流都拿不下来，说明直播源实际上无法播放，修正状态为无效
+                        finalValid = false;
+                        finalMsg = `直播流拉取失败 (${realRes})`;
+                        resolutions = ['未知'];
+                    } else {
+                        resolutions = [realRes];
+                        finalMsg = '有效直播源 | 物理拉流成功';
                     }
                 }
             }
@@ -268,12 +317,12 @@ async function checkBatch(items, concurrency, timeout, enableTSResolution) {
             results[current] = {
                 url: item.url,
                 name: item.name,
-                valid: validResult.valid,
-                msg: validResult.msg,
+                valid: finalValid,
+                msg: finalMsg,
                 resolutions
             };
 
-            console.log(`[${current + 1}/${items.length}]`, item.url, validResult.valid ? '✅ 有效' : '❌ 无效', resolutions.join(','));
+            console.log(`[${current + 1}/${items.length}]`, item.url, finalValid ? '✅ 有效' : '❌ 无效', resolutions.join(','));
         }
     }
 
@@ -289,7 +338,9 @@ async function checkBatch(items, concurrency, timeout, enableTSResolution) {
 // API 路由
 // ============================
 app.post('/check', async (req, res) => {
-    const { links, concurrency = 5, timeout = 8000, enableTSResolution = false } = req.body;
+    const { links, concurrency = 3, timeout = 10000, enableTSResolution = true } = req.body; 
+    // 💡 提示：因为要下载2秒流，建议前端传来的并发并发数（concurrency）不要设置太高，推荐 3-5 
+    
     if (!links || !links.length) return res.json({ error: '没有链接' });
 
     const items = links.map(line => {
@@ -326,6 +377,5 @@ app.listen(PORT, () => {
     console.log(` 🌐 访问地址: http://localhost:${PORT}`);
     console.log(`====================================`);
     
-    // 💡 仅在程序启动时初始化一次 FFmpeg，挂载全局路径，后续不再重复读盘
     ensureFFmpeg().catch(err => console.error("FFmpeg 初始化崩溃:", err));
 });

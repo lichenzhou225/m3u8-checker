@@ -288,7 +288,7 @@ app.listen(PORT, () => {
     <title>直播源分辨率批量检测</title>
     <style>
         body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .container { max-width: 80%; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
         textarea { width: 100%; height: 130px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 13px; }
         .controls { margin: 15px 0; display: flex; gap: 15px; align-items: center; }

@@ -1,5 +1,5 @@
 // ==========================================
-// server.js 完美兼容打包版（智能双阶探测 + 自动保存版）
+// server.js 完美兼容打包版（报告合流+前端修复版）
 // ==========================================
 
 const express = require('express');
@@ -33,9 +33,7 @@ if (!fs.existsSync(publicPath)) fs.mkdirSync(publicPath, { recursive: true });
 const tempDownloadDir = path.join(baseDir, 'temp_detect');
 if (!fs.existsSync(tempDownloadDir)) fs.mkdirSync(tempDownloadDir, { recursive: true });
 
-const logDir = path.join(baseDir, '检测结果报告');
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
-
+// 💡 优化：结果直接放在 EXE 同级目录下，不再单独建夹，方便查找
 const upload = multer({ dest: path.join(baseDir, 'uploads') });
 
 // FFmpeg 路径
@@ -104,7 +102,7 @@ async function checkM3U8(url, timeout = 10000) {
     } finally { clearTimeout(timer); }
 }
 
-// 💡 核心优化：底层拉流核心（支持参数定制）
+// 底层拉流核心
 function downloadAndProbe(streamUrl, duration, probeSize, analyzeDuration, timeoutMs) {
     const tempFileName = `test_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.ts`;
     const tempFilePath = path.join(tempDownloadDir, tempFileName);
@@ -161,23 +159,17 @@ function downloadAndProbe(streamUrl, duration, probeSize, analyzeDuration, timeo
     });
 }
 
-// 💡 智能双阶段探测
+// 智能双阶段探测
 async function getLiveStreamResolutionSmart(streamUrl) {
-    console.log(`[▶] 阶梯探测阶段 1 (快速检测): ${streamUrl}`);
-    // 阶段 1：快速下载 2 秒，小缓冲区，10秒硬超时（适合 95% 的普通/HD源）
-    let result = await downloadAndProbe(streamUrl, 2, 5000000, 2000000, 1000000);
-    
-    if (result !== 'TIMEOUT' && result !== 'FAILED' && result !== 'NO_VIDEO') {
-        return result; 
-    }
+    // 阶段 1：快速下载 2 秒
+    let result = await downloadAndProbe(streamUrl, 2, 5000000, 2000000, 9000);
+    if (result !== 'TIMEOUT' && result !== 'FAILED' && result !== 'NO_VIDEO') return result; 
 
-    // 阶段 2：如果阶段 1 失败或超时，启动 4K 增强探测（下载 4 秒，大缓冲区，18秒超时）
-    console.log(`[⚠️] 快速检测未果，启动阶段 2 (4K/高码率深探测): ${streamUrl}`);
-    result = await downloadAndProbe(streamUrl, 4, 15000000, 5000000, 18000);
-    
-    if (result === 'TIMEOUT') return '未知 (拉流超时)';
-    if (result === 'FAILED' || result === 'NO_VIDEO') return '无法检测 (流异常)';
-    return result;
+    // 阶段 2：启动 4K 增强探测
+    let result2 = await downloadAndProbe(streamUrl, 4, 15000000, 5000000, 16000);
+    if (result2 === 'TIMEOUT') return '未知 (拉流超时)';
+    if (result2 === 'FAILED' || result2 === 'NO_VIDEO') return '无法检测 (流异常)';
+    return result2;
 }
 
 // 批量处理器
@@ -196,7 +188,6 @@ async function checkBatch(items, concurrency, timeout) {
             let finalMsg = validResult.msg;
 
             if (finalValid) {
-                // 判断是否是嵌套的多分辨率播放列表
                 const regex = /RESOLUTION=(\d+x\d+)/g;
                 let m, list = [];
                 while (validResult.text && (m = regex.exec(validResult.text)) !== null) { list.push(m[1]); }
@@ -205,7 +196,6 @@ async function checkBatch(items, concurrency, timeout) {
                     resolutions = [...new Set(list)];
                     finalMsg = '有效多码率源';
                 } else {
-                    // 调用智能物理拉流检测
                     const realRes = await getLiveStreamResolutionSmart(item.url);
                     if (realRes.includes('超时') || realRes.includes('异常')) {
                         finalValid = false;
@@ -249,18 +239,20 @@ app.post('/check', async (req, res) => {
 
     const results = await checkBatch(items, concurrency, timeout);
 
-    // 💡 后端自动保存结果到本地文件
+    // 💡 优化：每次检测覆盖生成单一文件，不再留下一堆历史文件
     try {
-        const timeStr = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '-');
-        const filename = path.join(logDir, `检测报告_${timeStr}.txt`);
-        let content = `===== 检测报告 (共 ${results.length} 个) =====\n\n`;
+        const reportPath = path.join(baseDir, `最新检测报告.txt`);
+        const timeStr = new Date().toLocaleString();
+        
+        let content = `===== 检测报告 (生成时间: ${timeStr} | 共 ${results.length} 个) =====\n\n`;
         results.forEach((r, i) => {
             content += `[${i+1}] ${r.name},${r.url}\n状态: ${r.valid ? '有效':'无效'} | 原因: ${r.msg} | 分辨率: ${r.resolutions.join('/')}\n\n`;
         });
-        fs.writeFileSync(filename, content, 'utf-8');
-        console.log(`💾 报告已自动保存至本地: ${filename}`);
+        
+        fs.writeFileSync(reportPath, content, 'utf-8');
+        console.log(`💾 报告已自动刷新至: ${reportPath}`);
     } catch (e) {
-        console.error('自动保存文件失败:', e.message);
+        console.error('保存报告失败:', e.message);
     }
 
     res.json({ results, done: true });
@@ -274,7 +266,6 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     app._router.handle(req, res, () => {});
 });
 
-// 网页前端生成逻辑（若不存在 public/index.html 则自动创建）
 app.get('/', (req, res) => {
     res.sendFile(path.join(publicPath, 'index.html'));
 });
@@ -282,7 +273,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`====================================\n 🌐 访问地址: http://localhost:${PORT}\n====================================`);
     
-    // 自动在 public 目录下写一个极简漂亮的前端，自带“保存/下载”按钮
+    // 💡 修复：前端核心 bug（换行符处理逻辑）
     const htmlContent = `<!DOCTYPE html>
 <html>
 <head>
@@ -337,14 +328,16 @@ app.listen(PORT, () => {
         let currentResults = [];
 
         async function startCheck() {
-            const text = document.getElementById('linksInput').value.trim();
-            if(!text) return alert('请输入链接！');
-            const links = text.split('\\n').map(l => l.trim()).filter(Boolean);
+            const rawText = document.getElementById('linksInput').value.trim();
+            if(!rawText) return alert('请输入链接！');
+            
+            // 💡 彻底修复换行拆分 Bug
+            const links = rawText.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);
             
             document.getElementById('resultBody').innerHTML = '';
             document.getElementById('downloadBtn').style.display = 'none';
             const statusText = document.getElementById('statusText');
-            statusText.innerText = '正在初始化 FFmpeg 并检测中，请稍候...';
+            statusText.innerText = '正在初始化并将任务加入队列中，请稍候...';
             currentResults = [];
 
             try {
@@ -357,22 +350,20 @@ app.listen(PORT, () => {
                 if(data.error) return alert(data.error);
 
                 currentResults = data.results;
-                statusText.innerText = \`检测完成！共 \${currentResults.length} 个链接。\`;
+                statusText.innerText = '检测完成！共 ' + currentResults.length + ' 个链接。';
                 document.getElementById('downloadBtn').style.display = 'inline-block';
 
                 currentResults.forEach((r, idx) => {
                     const tr = document.createElement('tr');
-                    tr.innerHTML = \`
-                        <td>\${idx + 1}</td>
-                        <td>\${r.name || '未命名'}</td>
-                        <td style="word-break:break-all; font-size:12px; color:#666;">\${r.url}</td>
-                        <td>\${r.valid ? '<span class="badge-success">有效</span>' : '<span class="badge-danger">无效 ('+r.msg+')</span>'}</td>
-                        <td style="font-weight:bold; color:#2c3e50;">\${r.resolutions.join('/')}</td>
-                    \`;
+                    tr.innerHTML = '<td>' + (idx + 1) + '</td>' +
+                        '<td>' + (r.name || '未命名') + '</td>' +
+                        '<td style="word-break:break-all; font-size:12px; color:#666;">' + r.url + '</td>' +
+                        '<td>' + (r.valid ? '<span class="badge-success">有效</span>' : '<span class="badge-danger">无效 ('+r.msg+')</span>') + '</td>' +
+                        '<td style="font-weight:bold; color:#2c3e50;">' + r.resolutions.join('/') + '</td>';
                     document.getElementById('resultBody').appendChild(tr);
                 });
                 
-                alert('检测完成！结果已同步自动保存到 EXE 目录下的【检测结果报告】文件夹中！');
+                alert('检测完成！结果已更新到 EXE 目录下的【最新检测报告.txt】中！');
             } catch(e) {
                 statusText.innerText = '检测发生异常。';
                 alert('检测出错：' + e.message);
@@ -383,21 +374,20 @@ app.listen(PORT, () => {
             if(!currentResults.length) return;
             let text = "===== 直播源检测结果 =====\\n\\n";
             currentResults.forEach((r, i) => {
-                text += \`[\${i+1}] \${r.name},\${r.url}\\n状态: \${r.valid ? '有效':'无效'} | 原因: \${r.msg} | 分辨率: \${r.resolutions.join('/')}\\n\\n\`;
+                text += "[" + (i+1) + "] " + r.name + "," + r.url + "\\n状态: " + (r.valid ? '有效':'无效') + " | 原因: " + r.msg + " | 分辨率: " + r.resolutions.join('/') + "\\n\\n";
             });
             
             const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = \`网页导出_直播源报告_\${new Date().getTime()}.txt\`;
+            a.download = "网页导出_直播源报告_" + new Date().getTime() + ".txt";
             a.click();
         }
     </script>
 </body>
 </html>`;
     
-    if (!fs.existsSync(path.join(publicPath, 'index.html'))) {
-        fs.writeFileSync(path.join(publicPath, 'index.html'), htmlContent, 'utf-8');
-    }
+    // 💡 强制每次启动都刷新最新的 index.html 代码
+    fs.writeFileSync(path.join(publicPath, 'index.html'), htmlContent, 'utf-8');
     ensureFFmpeg().catch(err => console.error("FFmpeg 初始化崩溃:", err));
 });

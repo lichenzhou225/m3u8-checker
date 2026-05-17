@@ -1,5 +1,5 @@
 // ==========================================
-// server.js 完美兼容打包版（报告合流+前端修复版）
+// server.js 完美兼容打包版（动态实时刷新+分类合流版）
 // ==========================================
 
 const express = require('express');
@@ -33,7 +33,6 @@ if (!fs.existsSync(publicPath)) fs.mkdirSync(publicPath, { recursive: true });
 const tempDownloadDir = path.join(baseDir, 'temp_detect');
 if (!fs.existsSync(tempDownloadDir)) fs.mkdirSync(tempDownloadDir, { recursive: true });
 
-// 💡 优化：结果直接放在 EXE 同级目录下，不再单独建夹，方便查找
 const upload = multer({ dest: path.join(baseDir, 'uploads') });
 
 // FFmpeg 路径
@@ -161,113 +160,81 @@ function downloadAndProbe(streamUrl, duration, probeSize, analyzeDuration, timeo
 
 // 智能双阶段探测
 async function getLiveStreamResolutionSmart(streamUrl) {
-    // 阶段 1：快速下载 2 秒
     let result = await downloadAndProbe(streamUrl, 2, 5000000, 2000000, 9000);
     if (result !== 'TIMEOUT' && result !== 'FAILED' && result !== 'NO_VIDEO') return result; 
 
-    // 阶段 2：启动 4K 增强探测
     let result2 = await downloadAndProbe(streamUrl, 4, 15000000, 5000000, 16000);
     if (result2 === 'TIMEOUT') return '未知 (拉流超时)';
     if (result2 === 'FAILED' || result2 === 'NO_VIDEO') return '无法检测 (流异常)';
     return result2;
 }
 
-// 批量处理器
-async function checkBatch(items, concurrency, timeout) {
-    const results = [];
-    let index = 0;
+// 💡 优化 1：路由改为只处理单条检测（由前端控制队列，实现实时动态显示）
+app.post('/check-single', async (req, res) => {
+    const { item, timeout = 10000 } = req.body;
+    if (!item || !item.url) return res.json({ error: '无效条目' });
 
-    async function worker() {
-        while (index < items.length) {
-            const current = index++;
-            const item = items[current];
-            
-            const validResult = await checkM3U8(item.url, timeout);
-            let resolutions = ['未知'];
-            let finalValid = validResult.valid;
-            let finalMsg = validResult.msg;
+    const validResult = await checkM3U8(item.url, timeout);
+    let resolutions = ['未知'];
+    let finalValid = validResult.valid;
+    let finalMsg = validResult.msg;
 
-            if (finalValid) {
-                const regex = /RESOLUTION=(\d+x\d+)/g;
-                let m, list = [];
-                while (validResult.text && (m = regex.exec(validResult.text)) !== null) { list.push(m[1]); }
-                
-                if (list.length > 0) {
-                    resolutions = [...new Set(list)];
-                    finalMsg = '有效多码率源';
-                } else {
-                    const realRes = await getLiveStreamResolutionSmart(item.url);
-                    if (realRes.includes('超时') || realRes.includes('异常')) {
-                        finalValid = false;
-                        finalMsg = `直播流拉取失败 (${realRes})`;
-                        resolutions = ['未知'];
-                    } else {
-                        resolutions = [realRes];
-                        finalMsg = '有效直播源 | 物理拉流成功';
-                    }
-                }
+    if (finalValid) {
+        const regex = /RESOLUTION=(\d+x\d+)/g;
+        let m, list = [];
+        while (validResult.text && (m = regex.exec(validResult.text)) !== null) { list.push(m[1]); }
+        
+        if (list.length > 0) {
+            resolutions = [...new Set(list)];
+            finalMsg = '有效多码率源';
+        } else {
+            const realRes = await getLiveStreamResolutionSmart(item.url);
+            if (realRes.includes('超时') || realRes.includes('异常')) {
+                finalValid = false;
+                finalMsg = `直播流拉取失败 (${realRes})`;
+                resolutions = ['未知'];
+            } else {
+                resolutions = [realRes];
+                finalMsg = '有效直播源 | 物理拉流成功';
             }
-
-            results[current] = {
-                url: item.url,
-                name: item.name || `未命名_${current+1}`,
-                valid: finalValid,
-                msg: finalMsg,
-                resolutions
-            };
-            console.log(`[${current + 1}/${items.length}]`, item.url, finalValid ? '✅' : '❌', resolutions.join(','));
         }
     }
 
-    const workers = Array(Math.min(concurrency, items.length)).fill(null).map(() => worker());
-    await Promise.all(workers);
-    return results;
-}
+    const resultObj = {
+        url: item.url,
+        name: item.name,
+        valid: finalValid,
+        msg: finalMsg,
+        resolutions
+    };
 
-// API 路由
-app.post('/check', async (req, res) => {
-    const { links, concurrency = 3, timeout = 10000 } = req.body;
-    if (!links || !links.length) return res.json({ error: '没有链接' });
+    res.json(resultObj);
+});
 
-    const items = links.map(line => {
-        if (line.includes(',')) {
-            const idx = line.indexOf(',');
-            return { name: line.slice(0, idx).trim(), url: line.slice(idx + 1).trim() };
-        }
-        return { name: null, url: line.trim() };
-    });
+// 💡 优化 2：全部完成后单独调用此接口，进行后端的分类报告保存
+app.post('/save-report', async (req, res) => {
+    const { results } = req.body;
+    if (!results || !results.length) return res.json({ error: '无有效数据' });
 
-    const results = await checkBatch(items, concurrency, timeout);
-
-// 💡 优化：每次检测覆盖生成单一文件，并按照分辨率进行分类
-// 💡 最终优化：按分辨率分类，且每组只保留标准的 [名称,链接] 格式
     try {
         const reportPath = path.join(baseDir, `最新检测报告.txt`);
         const timeStr = new Date().toLocaleString();
         
-        // 1. 按分辨率进行归类
         const classified = {};
         results.forEach((r) => {
             const resKey = r.resolutions.join('/') || '未知';
-            if (!classified[resKey]) {
-                classified[resKey] = [];
-            }
-            // 只有有效的，或者你希望全部保留？这里默认全部保留，但无效的会在后面标注（可选）
+            if (!classified[resKey]) classified[resKey] = [];
             classified[resKey].push(r);
         });
 
-        // 2. 将分类排序（高分辨率在前）
         const sortedKeys = Object.keys(classified).sort((a, b) => {
             if (a === '未知') return 1;
             if (b === '未知') return -1;
-            const numA = parseInt(a.split('x')[0]) || 0;
-            const numB = parseInt(b.split('x')[0]) || 0;
-            return numB - numA; 
+            return (parseInt(b.split('x')[0]) || 0) - (parseInt(a.split('x')[0]) || 0); 
         });
 
-        // 3. 组合文本内容（精简版）
         let content = `==================================================\n`;
-        content += ` 📊 直播源分类检测报告 (精简自适应版)\n`;
+        content += ` 📊 直播源分类检测报告 (动态刷新精简版)\n`;
         content += ` 生成时间: ${timeStr}\n`;
         content += ` 总检测数: ${results.length} 个\n`;
         content += `==================================================\n\n`;
@@ -277,25 +244,22 @@ app.post('/check', async (req, res) => {
             content += `==================================================\n`;
             content += ` 📂 分辨率分类：【${resGroup}】 (共 ${list.length} 个)\n`;
             content += `==================================================\n`;
-            
             list.forEach((r) => {
                 if (r.valid) {
-                    // 有效的源：直接输出标准格式，方便直接复制粘贴使用
                     content += `${r.name},${r.url}\n`;
                 } else {
-                    // 无效的源：在行末加个小尾巴提示，防止鱼目混珠，不需要也可以删掉这行
-                    content += `${r.name},${r.url}\n`;
+                    content += `${r.name},${r.url} ---- [❌无效: ${r.msg}]\n`;
                 }
             });
-            content += `\n`; // 每个分类间留空行
+            content += `\n`;
         });
         
         fs.writeFileSync(reportPath, content, 'utf-8');
-        console.log(`💾 终极精简报告已成功刷新至: ${reportPath}`);
+        console.log(`💾 分类报告已保存: ${reportPath}`);
+        res.json({ success: true, path: reportPath });
     } catch (e) {
-        console.error('保存分类报告失败:', e.message);
+        res.json({ error: e.message });
     }
-    res.json({ results, done: true });
 });
 
 app.post('/upload', upload.single('file'), async (req, res) => {
@@ -310,10 +274,13 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(publicPath, 'index.html'));
 });
 
+// ============================
+// 服务启动并自动打开浏览器
+// ============================
 app.listen(PORT, () => {
     console.log(`====================================\n 🌐 访问地址: http://localhost:${PORT}\n====================================`);
     
-    // 💡 修复：前端核心 bug（换行符处理逻辑）
+    // 💡 优化后的现代化前端界面（支持并发控制队列、进度条、实时滚动刷新）
     const htmlContent = `<!DOCTYPE html>
 <html>
 <head>
@@ -323,111 +290,195 @@ app.listen(PORT, () => {
         body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
         .container { max-width: 1000px; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        textarea { width: 100%; height: 150px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 13px; }
+        textarea { width: 100%; height: 130px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 13px; }
         .controls { margin: 15px 0; display: flex; gap: 15px; align-items: center; }
         button { padding: 10px 20px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: 0.2s; }
         .btn-start { background: #3498db; color: white; }
         .btn-start:hover { background: #2980b9; }
+        .btn-start:disabled { background: #bdc3c7; cursor: not-allowed; }
         .btn-download { background: #2ecc71; color: white; display: none; }
-        .btn-download:hover { background: #27ae60; }
-        .status { font-weight: bold; color: #7f8c8d; }
+        .progress-box { flex-grow: 1; display: flex; flex-direction: column; gap: 5px; }
+        .progress-bar-bg { width: 100%; background: #e2e8f0; height: 12px; border-radius: 6px; overflow: hidden; }
+        .progress-bar-fill { width: 0%; background: #3498db; height: 100%; transition: width 0.1s ease; }
+        .status { font-weight: bold; color: #4a5568; font-size: 14px; }
         table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
         th, td { border: 1px solid #edf2f7; padding: 10px; text-align: left; }
-        th { background: #f7fafc; color: #4a5568; }
+        th { background: #f7fafc; color: #4a5568; position: sticky; top: 0; }
         .badge-success { background: #e6fffa; color: #00a389; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
         .badge-danger { background: #fff5f5; color: #e53e3e; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
+        .table-wrap { max-height: 500px; overflow-y: auto; margin-top: 15px; border: 1px solid #edf2f7; border-radius: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>📺 直播源有效性及 4K 分辨率批量检测系统</h2>
-        <p style="font-size:13px; color:#666;">请输入直播源（格式：名称,链接 或 直接输入链接，每行一个）：</p>
+        <h2>📺 直播源自适应分布式批量检测系统</h2>
+        <p style="font-size:13px; color:#666;">请输入直播源（格式：名称,链接 或 纯链接，每行一个）：</p>
         <textarea id="linksInput" placeholder="CCTV1,http://xxx/live.m3u8&#10;http://xxx/live2.m3u8"></textarea>
         
         <div class="controls">
-            <button class="btn-start" onclick="startCheck()">开始批量检测</button>
+            <button id="startBtn" class="btn-start" onclick="startCheckQueue()">开始批量检测</button>
             <button id="downloadBtn" class="btn-download" onclick="downloadResult()">📥 导出结果为 TXT 文件</button>
-            <span id="statusText" class="status">未开始</span>
+            
+            <div class="progress-box">
+                <div id="statusText" class="status">准备就绪 (未开始)</div>
+                <div class="progress-bar-bg">
+                    <div id="progressBar" class="progress-bar-fill"></div>
+                </div>
+            </div>
         </div>
 
-        <table id="resultTable">
-            <thead>
-                <tr>
-                    <th style="width: 5%;">#</th>
-                    <th style="width: 20%;">频道名称</th>
-                    <th style="width: 40%;">直播源地址</th>
-                    <th style="width: 20%;">检测状态</th>
-                    <th style="width: 15%;">分辨率</th>
-                </tr>
-            </thead>
-            <tbody id="resultBody"></tbody>
-        </table>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 6%;">#</th>
+                        <th style="width: 20%;">频道名称</th>
+                        <th style="width: 44%;">直播源地址</th>
+                        <th style="width: 15%;">实时状态</th>
+                        <th style="width: 15%;">分辨率</th>
+                    </tr>
+                </thead>
+                <tbody id="resultBody"></tbody>
+            </table>
+        </div>
     </div>
 
     <script>
-        let currentResults = [];
+        let globalResults = [];
 
-        async function startCheck() {
+        async function startCheckQueue() {
             const rawText = document.getElementById('linksInput').value.trim();
             if(!rawText) return alert('请输入链接！');
             
-            // 💡 彻底修复换行拆分 Bug
-            const links = rawText.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);
-            
+            const rawLines = rawText.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);
+            const items = rawLines.map((line, index) => {
+                if (line.includes(',')) {
+                    const idx = line.indexOf(',');
+                    return { name: line.slice(0, idx).trim(), url: line.slice(idx + 1).trim() };
+                }
+                return { name: '未命名_' + (index + 1), url: line };
+            });
+
+            // UI 初始化
             document.getElementById('resultBody').innerHTML = '';
             document.getElementById('downloadBtn').style.display = 'none';
-            const statusText = document.getElementById('statusText');
-            statusText.innerText = '正在初始化并将任务加入队列中，请稍候...';
-            currentResults = [];
+            document.getElementById('startBtn').disabled = true;
+            
+            globalResults = [];
+            const total = items.length;
+            let finishedCount = 0;
+            
+            // 💡 前端队列并发控制（设置并发数为 3，既保证4K识别率，又大幅提高流畅度）
+            const CONCURRENCY = 3; 
+            let itemIndex = 0;
 
+            async function poolWorker() {
+                while (itemIndex < total) {
+                    const currentIdx = itemIndex++;
+                    const item = items[currentIdx];
+                    
+                    // 预先在表格中占位，显示“检测中”
+                    const tr = document.createElement('tr');
+                    tr.id = 'row-' + currentIdx;
+                    tr.innerHTML = \`
+                        <td>\${currentIdx + 1}</td>
+                        <td>\${item.name}</td>
+                        <td style="word-break:break-all; font-size:12px; color:#666;">\${item.url}</td>
+                        <td class="row-status" style="color:#e67e22; font-weight:bold;">⏳ 正在拉流...</td>
+                        <td class="row-res">-</td>
+                    \`;
+                    document.getElementById('resultBody').appendChild(tr);
+                    
+                    // 自动让最新行滚动到视野中
+                    tr.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+                    try {
+                        const res = await fetch('/check-single', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ item, timeout: 10000 })
+                        });
+                        const data = await res.json();
+
+                        // 增量存入全局结果库
+                        globalResults.push(data);
+
+                        // 动态无缝更新当前行的状态
+                        const targetRow = document.getElementById('row-' + currentIdx);
+                        if (targetRow) {
+                            targetRow.querySelector('.row-status').innerHTML = data.valid ? 
+                                '<span class="badge-success">有效</span>' : 
+                                '<span class="badge-danger">无效</span>';
+                            targetRow.querySelector('.row-res').innerText = data.resolutions.join('/');
+                        }
+                    } catch (e) {
+                        console.error(e);
+                    } finally {
+                        finishedCount++;
+                        // 动态更新上方进度条
+                        const percent = Math.round((finishedCount / total) * 100);
+                        document.getElementById('progressBar').style.width = percent + '%';
+                        document.getElementById('statusText').innerText = \`正在实时检测中: \${finishedCount} / \${total} (\${percent}%)\`;
+                    }
+                }
+            }
+
+            // 多Worker并行消费队列
+            const workers = Array(Math.min(CONCURRENCY, total)).fill(null).map(() => poolWorker());
+            await Promise.all(workers);
+
+            // 💡 全部单条检测完毕，通知后端按分辨率打包分类保存
+            document.getElementById('statusText').innerText = '🎉 检测完毕！正在进行结构化分类存储...';
             try {
-                const res = await fetch('/check', {
+                await fetch('/save-report', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ links, concurrency: 3, timeout: 10000 })
+                    body: JSON.stringify({ results: globalResults })
                 });
-                const data = await res.json();
-                if(data.error) return alert(data.error);
+            } catch(e) { console.error(e); }
 
-                currentResults = data.results;
-                statusText.innerText = '检测完成！共 ' + currentResults.length + ' 个链接。';
-                document.getElementById('downloadBtn').style.display = 'inline-block';
-
-                currentResults.forEach((r, idx) => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = '<td>' + (idx + 1) + '</td>' +
-                        '<td>' + (r.name || '未命名') + '</td>' +
-                        '<td style="word-break:break-all; font-size:12px; color:#666;">' + r.url + '</td>' +
-                        '<td>' + (r.valid ? '<span class="badge-success">有效</span>' : '<span class="badge-danger">无效 ('+r.msg+')</span>') + '</td>' +
-                        '<td style="font-weight:bold; color:#2c3e50;">' + r.resolutions.join('/') + '</td>';
-                    document.getElementById('resultBody').appendChild(tr);
-                });
-                
-                alert('检测完成！结果已更新到 EXE 目录下的【最新检测报告.txt】中！');
-            } catch(e) {
-                statusText.innerText = '检测发生异常。';
-                alert('检测出错：' + e.message);
-            }
+            document.getElementById('statusText').innerText = \`全部检测完成！共 \${total} 条。\`;
+            document.getElementById('downloadBtn').style.display = 'inline-block';
+            document.getElementById('startBtn').disabled = false;
+            alert('检测全部结束！分类列表已自动覆盖保存到 EXE 目录下的【最新检测报告.txt】。');
         }
 
         function downloadResult() {
-            if(!currentResults.length) return;
-            let text = "===== 直播源检测结果 =====\\n\\n";
-            currentResults.forEach((r, i) => {
-                text += "[" + (i+1) + "] " + r.name + "," + r.url + "\\n状态: " + (r.valid ? '有效':'无效') + " | 原因: " + r.msg + " | 分辨率: " + r.resolutions.join('/') + "\\n\\n";
+            if(!globalResults.length) return;
+            // 前端下载也同步采用漂亮的分类导出
+            const classified = {};
+            globalResults.forEach(r => {
+                const k = r.resolutions.join('/') || '未知';
+                if(!classified[k]) classified[k] = [];
+                classified[k].push(r);
+            });
+            
+            let text = "===== 直播源网页导出报告 =====\\n\\n";
+            Object.keys(classified).forEach(group => {
+                text += \`=====================\\n分类: 【\${group}】\\n=====================\\n\`;
+                classified[group].forEach(r => {
+                    text += r.valid ? \`\${r.name},\${r.url}\\n\` : \`\${r.name},\${r.url} ---- [❌无效: \${r.msg}]\\n\`;
+                });
+                text += "\\n";
             });
             
             const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = "网页导出_直播源报告_" + new Date().getTime() + ".txt";
+            a.download = "网页分类导出_直播源报告.txt";
             a.click();
         }
     </script>
 </body>
 </html>`;
     
-    // 💡 强制每次启动都刷新最新的 index.html 代码
     fs.writeFileSync(path.join(publicPath, 'index.html'), htmlContent, 'utf-8');
+    
+    // 自动打开浏览器
+    try {
+        const { exec } = require('child_process');
+        if (process.platform === 'win32') exec(`start http://localhost:${PORT}`);
+    } catch (e) { console.error(e.message); }
+
     ensureFFmpeg().catch(err => console.error("FFmpeg 初始化崩溃:", err));
 });

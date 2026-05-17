@@ -288,9 +288,9 @@ app.listen(PORT, () => {
     <title>直播源分辨率批量检测</title>
     <style>
         body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 80%; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .container { max-width: 75%; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        textarea { width: 100%; height: 130px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 13px; }
+        textarea { width: 100%; height: 130px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 14px; }
         .controls { margin: 15px 0; display: flex; gap: 15px; align-items: center; }
         button { padding: 10px 20px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: 0.2s; }
         .btn-start { background: #3498db; color: white; }
@@ -304,15 +304,15 @@ app.listen(PORT, () => {
         table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
         th, td { border: 1px solid #edf2f7; padding: 10px; text-align: left; }
         th { background: #f7fafc; color: #4a5568; position: sticky; top: 0; }
-        .badge-success { background: #e6fffa; color: #00a389; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
-        .badge-danger { background: #fff5f5; color: #e53e3e; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
+        .badge-success { background: #e6fffa; color: #00a389; padding: 3px 8px; border-radius: 4px; font-size: 13px; font-weight:bold;}
+        .badge-danger { background: #fff5f5; color: #e53e3e; padding: 3px 8px; border-radius: 4px; font-size: 13px; font-weight:bold;}
         .table-wrap { max-height: 500px; overflow-y: auto; margin-top: 15px; border: 1px solid #edf2f7; border-radius: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>📺 直播源自适应分布式批量检测系统</h2>
-        <p style="font-size:13px; color:#666;">请输入直播源（格式：名称,链接 或 纯链接，每行一个）：</p>
+        <p style="font-size:14px; color:#666;">请输入直播源（格式：名称,链接 或 纯链接，每行一个）：</p>
         <textarea id="linksInput" placeholder="CCTV1,http://xxx/live.m3u8&#10;http://xxx/live2.m3u8"></textarea>
         
         <div class="controls">
@@ -383,7 +383,7 @@ app.listen(PORT, () => {
                     tr.innerHTML = \`
                         <td>\${currentIdx + 1}</td>
                         <td>\${item.name}</td>
-                        <td style="word-break:break-all; font-size:12px; color:#666;">\${item.url}</td>
+                        <td style="word-break:break-all; font-size:13px; color:#666;">\${item.url}</td>
                         <td class="row-status" style="color:#e67e22; font-weight:bold;">⏳ 正在拉流...</td>
                         <td class="row-res">-</td>
                     \`;

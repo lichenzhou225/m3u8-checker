@@ -332,10 +332,10 @@ app.listen(PORT, () => {
                 <thead>
                     <tr>
                         <th style="width: 6%;">#</th>
-                        <th style="width: 20%;">频道名称</th>
-                        <th style="width: 44%;">直播源地址</th>
-                        <th style="width: 15%;">实时状态</th>
-                        <th style="width: 15%;">分辨率</th>
+                        <th style="width: 18%;">频道名称</th>
+                        <th style="width: 50%;">直播源地址</th>
+                        <th style="width: 13%;">实时状态</th>
+                        <th style="width: 13%;">分辨率</th>
                     </tr>
                 </thead>
                 <tbody id="resultBody"></tbody>

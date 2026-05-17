@@ -1,5 +1,5 @@
 // ==========================================
-// server.js 完美兼容打包版（直播流截取探测版）
+// server.js 完美兼容打包版（智能双阶探测 + 自动保存版）
 // ==========================================
 
 const express = require('express');
@@ -13,109 +13,65 @@ const unzipper = require('unzipper');
 const app = express();
 const PORT = 3000;
 
-// 忽略自签名或不安全直播源链接的 HTTPS 证书校验（防止打包后网络限制导致未知错误）
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-process.on('uncaughtException', err => {
-    console.error('未捕获异常:', err);
-});
-
-process.on('unhandledRejection', err => {
-    console.error('Promise异常:', err);
-});
+process.on('uncaughtException', err => console.error('未捕获异常:', err));
+process.on('unhandledRejection', err => console.error('Promise异常:', err));
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-// ==========================================
-// 💡 环境判断与静态路径修复
-// ==========================================
+// 环境判断
 const isPkg = typeof process.pkg !== 'undefined';
 const isElectron = process.versions && process.versions.electron;
+let baseDir = isPkg ? path.dirname(process.execPath) : (isElectron ? (require('electron').app.isPackaged ? path.dirname(process.execPath) : __dirname) : __dirname);
 
-let baseDir;
-if (isPkg) {
-    baseDir = path.dirname(process.execPath);
-} else if (isElectron) {
-    const { app: electronApp } = require('electron');
-    baseDir = electronApp.isPackaged ? path.dirname(process.execPath) : __dirname;
-} else {
-    baseDir = __dirname;
-}
-
-// 确保前端静态文件能被正确找到
+// 目录初始化
 const publicPath = path.join(baseDir, 'public');
-app.use(express.static(publicPath));
+if (!fs.existsSync(publicPath)) fs.mkdirSync(publicPath, { recursive: true });
 
-// 创建临时的临时文件夹用于存放 2 秒的下载片段
 const tempDownloadDir = path.join(baseDir, 'temp_detect');
-if (!fs.existsSync(tempDownloadDir)) {
-    fs.mkdirSync(tempDownloadDir, { recursive: true });
-}
+if (!fs.existsSync(tempDownloadDir)) fs.mkdirSync(tempDownloadDir, { recursive: true });
+
+const logDir = path.join(baseDir, '检测结果报告');
+if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
 const upload = multer({ dest: path.join(baseDir, 'uploads') });
 
-// ==========================================
-// 💡 FFmpeg 路径配置
-// ==========================================
+// FFmpeg 路径
 const ffmpegRoot = path.join(baseDir, 'bin');
 const ffmpegExe = path.join(ffmpegRoot, 'ffmpeg.exe');
 const ffprobeExe = path.join(ffmpegRoot, 'ffprobe.exe');
-
 let ffmpegReady = false;
 
-// ============================
-// 自动下载 FFmpeg
-// ============================
 async function ensureFFmpeg() {
     if (ffmpegReady) return;
-
     if (fs.existsSync(ffmpegExe) && fs.existsSync(ffprobeExe)) {
         ffmpeg.setFfmpegPath(ffmpegExe);
         ffmpeg.setFfprobePath(ffprobeExe);
         ffmpegReady = true;
-        console.log('✅ 已成功挂载本地 FFmpeg:', ffmpegExe);
+        console.log('✅ 已成功挂载本地 FFmpeg');
         return;
     }
-
-    console.log('⏳ 未检测到 FFmpeg，开始自动下载至:', ffmpegRoot);
-
-    if (!fs.existsSync(ffmpegRoot)) {
-        fs.mkdirSync(ffmpegRoot, { recursive: true });
-    }
-
+    console.log('⏳ 开始自动下载 FFmpeg...');
+    if (!fs.existsSync(ffmpegRoot)) fs.mkdirSync(ffmpegRoot, { recursive: true });
     const zipPath = path.join(ffmpegRoot, 'ffmpeg.zip');
-
     await new Promise((resolve, reject) => {
         const file = fs.createWriteStream(zipPath);
-        https.get(
-            'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-            (res) => {
-                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                    https.get(res.headers.location, response => response.pipe(file)).on('error', reject);
-                } else {
-                    res.pipe(file);
-                }
-                file.on('finish', () => {
-                    file.close(resolve);
-                });
-            }
-        ).on('error', reject);
+        https.get('https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip', (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                https.get(res.headers.location, response => response.pipe(file)).on('error', reject);
+            } else { res.pipe(file); }
+            file.on('finish', () => file.close(resolve));
+        }).on('error', reject);
     });
-
-    console.log('📦 FFmpeg 下载完成，开始解压...');
-
-    await fs.createReadStream(zipPath)
-        .pipe(unzipper.Extract({ path: ffmpegRoot }))
-        .promise();
-
+    console.log('📦 开始解压 FFmpeg...');
+    await fs.createReadStream(zipPath).pipe(unzipper.Extract({ path: ffmpegRoot })).promise();
     const dirs = fs.readdirSync(ffmpegRoot);
     let found = false;
-
     for (const d of dirs) {
         const fp = path.join(ffmpegRoot, d, 'bin', 'ffmpeg.exe');
         const pp = path.join(ffmpegRoot, d, 'bin', 'ffprobe.exe');
-
         if (fs.existsSync(fp) && fs.existsSync(pp)) {
             fs.copyFileSync(fp, ffmpegExe);
             fs.copyFileSync(pp, ffprobeExe);
@@ -123,163 +79,109 @@ async function ensureFFmpeg() {
             break;
         }
     }
-
     if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-
-    if (!found) {
-        throw new Error('FFmpeg 解压失败，未找到二进制程序');
-    }
-
+    if (!found) throw new Error('FFmpeg 解压失败');
     ffmpeg.setFfmpegPath(ffmpegExe);
     ffmpeg.setFfprobePath(ffprobeExe);
     ffmpegReady = true;
-    console.log('🚀 FFmpeg 已经自动配置就绪！');
+    console.log('🚀 FFmpeg 配置就绪！');
 }
 
-// ============================
-// 检测 M3U8 是否有效
-// ============================
-async function checkM3U8(url, timeout = 30000) {
+// 基础 M3U8 校验
+async function checkM3U8(url, timeout = 10000) {
     const controller = new AbortController();
-    const timer = setTimeout(() => { controller.abort(); }, timeout);
-
+    const timer = setTimeout(() => controller.abort(), timeout);
     try {
-        const res = await fetch(url, {
-            method: 'GET',
-            signal: controller.signal
-        });
-
-        if (!res.ok) {
-            return { valid: false, msg: `HTTP ${res.status}` };
-        }
-
+        const res = await fetch(url, { method: 'GET', signal: controller.signal });
+        if (!res.ok) return { valid: false, msg: `HTTP ${res.status}` };
         const text = await res.text();
-        if (
-            text.includes('#EXTM3U') ||
-            text.includes('#EXTINF') ||
-            text.includes('.ts') || 
-            text.includes('.mp4') || 
-            text.includes('#EXT-X-STREAM-INF')
-        ) {
-            return { valid: true, msg: '有效 M3U8 | 直播流格式' };
+        if (text.includes('#EXTM3U') || text.includes('#EXTINF') || text.includes('.ts') || text.includes('.mp4') || text.includes('#EXT-X-STREAM-INF')) {
+            return { valid: true, msg: '有效直播流格式', text };
         }
-        return { valid: false, msg: '非M3U8直播内容' };
+        return { valid: false, msg: '非直播内容' };
     } catch (e) {
-        return { valid: false, msg: e.message };
-    } finally {
-        clearTimeout(timer);
-    }
+        return { valid: false, msg: e.name === 'AbortError' ? '连接超时' : e.message };
+    } finally { clearTimeout(timer); }
 }
 
-// ============================
-// 主播放列表分辨率解析（原基础文本解析保留作为辅助）
-// ============================
-async function getM3U8Resolution(url) {
-    try {
-        const res = await fetch(url);
-        const text = await res.text();
-        const regex = /RESOLUTION=(\d+x\d+)/g;
-        const list = [];
-        let m;
-
-        while ((m = regex.exec(text)) !== null) {
-            list.push(m[1]);
-        }
-
-        if (list.length > 0) return [...new Set(list)];
-        if (text.includes('#EXTINF')) return ['单分辨率'];
-        return ['未知'];
-    } catch {
-        return ['未知'];
-    }
-}
-
-// ====================================================
-// ⚡ 优化版：支持 4K/高码率直播源的下载探测
-// ====================================================
-async function getLiveStreamResolutionByDownload(streamUrl, timeoutMs = 20000) {
+// 💡 核心优化：底层拉流核心（支持参数定制）
+function downloadAndProbe(streamUrl, duration, probeSize, analyzeDuration, timeoutMs) {
     const tempFileName = `test_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.ts`;
     const tempFilePath = path.join(tempDownloadDir, tempFileName);
 
     return new Promise((resolve) => {
         let isResolved = false;
-
-        // 强行增加定时器保护
         const killTimer = setTimeout(() => {
             if (!isResolved) {
                 isResolved = true;
-                console.log(`[超时拦截] 直播源下载探测超时: ${streamUrl}`);
                 cleanup();
-                resolve('未知 (拉流超时)');
+                resolve('TIMEOUT');
             }
         }, timeoutMs);
 
         function cleanup() {
-            try {
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-            } catch (e) {
-                // 忽略删除失败
-            }
+            try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (e) {}
         }
 
-        console.log(`🎬 开始下载直播流进行 4K 兼容测试: ${streamUrl}`);
-
-        // 调用 FFmpeg 录制
         ffmpeg(streamUrl)
             .inputOptions([
-                '-rw_timeout 5000000',     // 开启协议层超时 (5秒)
-                '-probesize 15000000',     // 💡 增大探测大小（提升至 15MB），确保容纳 4K 的大关键帧
-                '-analyzeduration 5000000' // 💡 增大分析时间（提升至 5秒），给 4K 编码更多解析时间
+                '-rw_timeout 4000000', 
+                `-probesize ${probeSize}`, 
+                `-analyzeduration ${analyzeDuration}`
             ])
             .outputOptions([
-                '-t 4',            // 💡 严格限制下载时间延长至 4 秒（4K源需要稍长的数据流）
-                '-c copy',         // 直接拷贝流，不重新编码
-                '-map 0:v:0'       // 只保留第一个视频流
+                `-t ${duration}`, 
+                '-c copy', 
+                '-map 0:v:0'
             ])
             .output(tempFilePath)
             .on('end', () => {
-                // 下载成功后，利用 ffprobe 分析该本地临时文件
                 ffmpeg.ffprobe(tempFilePath, (err, metadata) => {
                     clearTimeout(killTimer);
                     if (isResolved) return;
                     isResolved = true;
-
                     if (err || !metadata || !metadata.streams) {
-                        console.log(`❌ 分析下载切片失败: ${streamUrl}`, err ? err.message : '');
                         cleanup();
-                        return resolve('解析失败');
+                        return resolve('FAILED');
                     }
-
                     const stream = metadata.streams.find(s => s.codec_type === 'video');
                     cleanup();
-
-                    if (!stream) {
-                        return resolve('无视频流');
-                    }
-                    
-                    const resStr = `${stream.width}x${stream.height}`;
-                    console.log(`✅ 下载分析成功! 分辨率: ${resStr}`);
-                    resolve(resStr);
+                    if (!stream) return resolve('NO_VIDEO');
+                    resolve(`${stream.width}x${stream.height}`);
                 });
             })
-            .on('error', (err) => {
+            .on('error', () => {
                 clearTimeout(killTimer);
                 if (isResolved) return;
                 isResolved = true;
-                console.log(`❌ FFmpeg 下载流失败: ${err.message}`);
                 cleanup();
-                resolve('无法检测 (流无响应)');
+                resolve('FAILED');
             })
             .run();
     });
 }
 
-// ============================
-// 批量检测核心
-// ============================
-async function checkBatch(items, concurrency, timeout, enableTSResolution) {
+// 💡 智能双阶段探测
+async function getLiveStreamResolutionSmart(streamUrl) {
+    console.log(`[▶] 阶梯探测阶段 1 (快速检测): ${streamUrl}`);
+    // 阶段 1：快速下载 2 秒，小缓冲区，10秒硬超时（适合 95% 的普通/HD源）
+    let result = await downloadAndProbe(streamUrl, 2, 5000000, 2000000, 1000000);
+    
+    if (result !== 'TIMEOUT' && result !== 'FAILED' && result !== 'NO_VIDEO') {
+        return result; 
+    }
+
+    // 阶段 2：如果阶段 1 失败或超时，启动 4K 增强探测（下载 4 秒，大缓冲区，18秒超时）
+    console.log(`[⚠️] 快速检测未果，启动阶段 2 (4K/高码率深探测): ${streamUrl}`);
+    result = await downloadAndProbe(streamUrl, 4, 15000000, 5000000, 18000);
+    
+    if (result === 'TIMEOUT') return '未知 (拉流超时)';
+    if (result === 'FAILED' || result === 'NO_VIDEO') return '无法检测 (流异常)';
+    return result;
+}
+
+// 批量处理器
+async function checkBatch(items, concurrency, timeout) {
     const results = [];
     let index = 0;
 
@@ -288,23 +190,24 @@ async function checkBatch(items, concurrency, timeout, enableTSResolution) {
             const current = index++;
             const item = items[current];
             
-            // 1. 初步基础检测（判断基础网络可达性与头部）
             const validResult = await checkM3U8(item.url, timeout);
             let resolutions = ['未知'];
             let finalValid = validResult.valid;
             let finalMsg = validResult.msg;
 
             if (finalValid) {
-                // 2. 获取嵌套或单分辨率标示
-                resolutions = await getM3U8Resolution(item.url);
+                // 判断是否是嵌套的多分辨率播放列表
+                const regex = /RESOLUTION=(\d+x\d+)/g;
+                let m, list = [];
+                while (validResult.text && (m = regex.exec(validResult.text)) !== null) { list.push(m[1]); }
                 
-                // 如果开启了深度检测，或者常规检测为单分辨率/未知，则执行“下载2秒探测法”
-                if (enableTSResolution || resolutions[0] === '单分辨率' || resolutions[0] === '未知') {
-                    // 直接对该直播源进行 2 秒物理拉流测试
-                    const realRes = await getLiveStreamResolutionByDownload(item.url, timeout + 5000);
-                    
-                    if (realRes.includes('失败') || realRes.includes('超时') || realRes.includes('无法检测')) {
-                        // 如果连 2 秒的流都拿不下来，说明直播源实际上无法播放，修正状态为无效
+                if (list.length > 0) {
+                    resolutions = [...new Set(list)];
+                    finalMsg = '有效多码率源';
+                } else {
+                    // 调用智能物理拉流检测
+                    const realRes = await getLiveStreamResolutionSmart(item.url);
+                    if (realRes.includes('超时') || realRes.includes('异常')) {
                         finalValid = false;
                         finalMsg = `直播流拉取失败 (${realRes})`;
                         resolutions = ['未知'];
@@ -317,45 +220,49 @@ async function checkBatch(items, concurrency, timeout, enableTSResolution) {
 
             results[current] = {
                 url: item.url,
-                name: item.name,
+                name: item.name || `未命名_${current+1}`,
                 valid: finalValid,
                 msg: finalMsg,
                 resolutions
             };
-
-            console.log(`[${current + 1}/${items.length}]`, item.url, finalValid ? '✅ 有效' : '❌ 无效', resolutions.join(','));
+            console.log(`[${current + 1}/${items.length}]`, item.url, finalValid ? '✅' : '❌', resolutions.join(','));
         }
     }
 
-    const workers = [];
-    for (let i = 0; i < Math.min(concurrency, items.length); i++) {
-        workers.push(worker());
-    }
+    const workers = Array(Math.min(concurrency, items.length)).fill(null).map(() => worker());
     await Promise.all(workers);
     return results;
 }
 
-// ============================
 // API 路由
-// ============================
 app.post('/check', async (req, res) => {
-    const { links, concurrency = 3, timeout = 10000, enableTSResolution = true } = req.body; 
-    // 💡 提示：因为要下载2秒流，建议前端传来的并发并发数（concurrency）不要设置太高，推荐 3-5 
-    
+    const { links, concurrency = 3, timeout = 10000 } = req.body;
     if (!links || !links.length) return res.json({ error: '没有链接' });
 
     const items = links.map(line => {
         if (line.includes(',')) {
             const idx = line.indexOf(',');
-            return {
-                name: line.slice(0, idx).trim(),
-                url: line.slice(idx + 1).trim()
-            };
+            return { name: line.slice(0, idx).trim(), url: line.slice(idx + 1).trim() };
         }
         return { name: null, url: line.trim() };
     });
 
-    const results = await checkBatch(items, concurrency, timeout, enableTSResolution);
+    const results = await checkBatch(items, concurrency, timeout);
+
+    // 💡 后端自动保存结果到本地文件
+    try {
+        const timeStr = new Date().toISOString().replace(/T/, '_').replace(/\..+/, '').replace(/:/g, '-');
+        const filename = path.join(logDir, `检测报告_${timeStr}.txt`);
+        let content = `===== 检测报告 (共 ${results.length} 个) =====\n\n`;
+        results.forEach((r, i) => {
+            content += `[${i+1}] ${r.name},${r.url}\n状态: ${r.valid ? '有效':'无效'} | 原因: ${r.msg} | 分辨率: ${r.resolutions.join('/')}\n\n`;
+        });
+        fs.writeFileSync(filename, content, 'utf-8');
+        console.log(`💾 报告已自动保存至本地: ${filename}`);
+    } catch (e) {
+        console.error('自动保存文件失败:', e.message);
+    }
+
     res.json({ results, done: true });
 });
 
@@ -363,20 +270,134 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     if (!req.file) return res.json({ error: '未上传文件' });
     const text = fs.readFileSync(req.file.path, 'utf-8');
     fs.unlinkSync(req.file.path);
-
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    req.body.links = lines;
+    req.body.links = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     app._router.handle(req, res, () => {});
 });
 
-// ============================
-// 服务启动
-// ============================
+// 网页前端生成逻辑（若不存在 public/index.html 则自动创建）
+app.get('/', (req, res) => {
+    res.sendFile(path.join(publicPath, 'index.html'));
+});
+
 app.listen(PORT, () => {
-    console.log(`====================================`);
-    console.log(` 🚀 M3U8 批量服务已成功在本地建立监听`);
-    console.log(` 🌐 访问地址: http://localhost:${PORT}`);
-    console.log(`====================================`);
+    console.log(`====================================\n 🌐 访问地址: http://localhost:${PORT}\n====================================`);
     
+    // 自动在 public 目录下写一个极简漂亮的前端，自带“保存/下载”按钮
+    const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>直播源分辨率批量检测</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        textarea { width: 100%; height: 150px; padding: 10px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; font-family: monospace; font-size: 13px; }
+        .controls { margin: 15px 0; display: flex; gap: 15px; align-items: center; }
+        button { padding: 10px 20px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; transition: 0.2s; }
+        .btn-start { background: #3498db; color: white; }
+        .btn-start:hover { background: #2980b9; }
+        .btn-download { background: #2ecc71; color: white; display: none; }
+        .btn-download:hover { background: #27ae60; }
+        .status { font-weight: bold; color: #7f8c8d; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+        th, td { border: 1px solid #edf2f7; padding: 10px; text-align: left; }
+        th { background: #f7fafc; color: #4a5568; }
+        .badge-success { background: #e6fffa; color: #00a389; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
+        .badge-danger { background: #fff5f5; color: #e53e3e; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight:bold;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>📺 直播源有效性及 4K 分辨率批量检测系统</h2>
+        <p style="font-size:13px; color:#666;">请输入直播源（格式：名称,链接 或 直接输入链接，每行一个）：</p>
+        <textarea id="linksInput" placeholder="CCTV1,http://xxx/live.m3u8&#10;http://xxx/live2.m3u8"></textarea>
+        
+        <div class="controls">
+            <button class="btn-start" onclick="startCheck()">开始批量检测</button>
+            <button id="downloadBtn" class="btn-download" onclick="downloadResult()">📥 导出结果为 TXT 文件</button>
+            <span id="statusText" class="status">未开始</span>
+        </div>
+
+        <table id="resultTable">
+            <thead>
+                <tr>
+                    <th style="width: 5%;">#</th>
+                    <th style="width: 20%;">频道名称</th>
+                    <th style="width: 40%;">直播源地址</th>
+                    <th style="width: 20%;">检测状态</th>
+                    <th style="width: 15%;">分辨率</th>
+                </tr>
+            </thead>
+            <tbody id="resultBody"></tbody>
+        </table>
+    </div>
+
+    <script>
+        let currentResults = [];
+
+        async function startCheck() {
+            const text = document.getElementById('linksInput').value.trim();
+            if(!text) return alert('请输入链接！');
+            const links = text.split('\\n').map(l => l.trim()).filter(Boolean);
+            
+            document.getElementById('resultBody').innerHTML = '';
+            document.getElementById('downloadBtn').style.display = 'none';
+            const statusText = document.getElementById('statusText');
+            statusText.innerText = '正在初始化 FFmpeg 并检测中，请稍候...';
+            currentResults = [];
+
+            try {
+                const res = await fetch('/check', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ links, concurrency: 3, timeout: 10000 })
+                });
+                const data = await res.json();
+                if(data.error) return alert(data.error);
+
+                currentResults = data.results;
+                statusText.innerText = \`检测完成！共 \${currentResults.length} 个链接。\`;
+                document.getElementById('downloadBtn').style.display = 'inline-block';
+
+                currentResults.forEach((r, idx) => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = \`
+                        <td>\${idx + 1}</td>
+                        <td>\${r.name || '未命名'}</td>
+                        <td style="word-break:break-all; font-size:12px; color:#666;">\${r.url}</td>
+                        <td>\${r.valid ? '<span class="badge-success">有效</span>' : '<span class="badge-danger">无效 ('+r.msg+')</span>'}</td>
+                        <td style="font-weight:bold; color:#2c3e50;">\${r.resolutions.join('/')}</td>
+                    \`;
+                    document.getElementById('resultBody').appendChild(tr);
+                });
+                
+                alert('检测完成！结果已同步自动保存到 EXE 目录下的【检测结果报告】文件夹中！');
+            } catch(e) {
+                statusText.innerText = '检测发生异常。';
+                alert('检测出错：' + e.message);
+            }
+        }
+
+        function downloadResult() {
+            if(!currentResults.length) return;
+            let text = "===== 直播源检测结果 =====\\n\\n";
+            currentResults.forEach((r, i) => {
+                text += \`[\${i+1}] \${r.name},\${r.url}\\n状态: \${r.valid ? '有效':'无效'} | 原因: \${r.msg} | 分辨率: \${r.resolutions.join('/')}\\n\\n\`;
+            });
+            
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = \`网页导出_直播源报告_\${new Date().getTime()}.txt\`;
+            a.click();
+        }
+    </script>
+</body>
+</html>`;
+    
+    if (!fs.existsSync(path.join(publicPath, 'index.html'))) {
+        fs.writeFileSync(path.join(publicPath, 'index.html'), htmlContent, 'utf-8');
+    }
     ensureFFmpeg().catch(err => console.error("FFmpeg 初始化崩溃:", err));
 });

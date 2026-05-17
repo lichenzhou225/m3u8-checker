@@ -195,16 +195,16 @@ async function getM3U8Resolution(url) {
 }
 
 // ====================================================
-// ⚡ 核心修改：下载 2 秒视频，并通过 FFmpeg 分析其实际分辨率
+// ⚡ 优化版：支持 4K/高码率直播源的下载探测
 // ====================================================
-async function getLiveStreamResolutionByDownload(streamUrl, timeoutMs = 15000) {
+async function getLiveStreamResolutionByDownload(streamUrl, timeoutMs = 20000) {
     const tempFileName = `test_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.ts`;
     const tempFilePath = path.join(tempDownloadDir, tempFileName);
 
     return new Promise((resolve) => {
         let isResolved = false;
 
-        // 强行增加定时器保护，防止某些流导致 ffmpeg 进程挂起不动
+        // 强行增加定时器保护
         const killTimer = setTimeout(() => {
             if (!isResolved) {
                 isResolved = true;
@@ -224,29 +224,30 @@ async function getLiveStreamResolutionByDownload(streamUrl, timeoutMs = 15000) {
             }
         }
 
-        console.log(`🎬 开始下载2秒直播流进行测试: ${streamUrl}`);
+        console.log(`🎬 开始下载直播流进行 4K 兼容测试: ${streamUrl}`);
 
-        // 调用 FFmpeg 录制 2 秒
+        // 调用 FFmpeg 录制
         ffmpeg(streamUrl)
             .inputOptions([
-                '-rw_timeout 5000000', // 开启协议层超时 (5秒)
-                '-analyzeduration 1000000'
+                '-rw_timeout 5000000',     // 开启协议层超时 (5秒)
+                '-probesize 15000000',     // 💡 增大探测大小（提升至 15MB），确保容纳 4K 的大关键帧
+                '-analyzeduration 5000000' // 💡 增大分析时间（提升至 5秒），给 4K 编码更多解析时间
             ])
             .outputOptions([
-                '-t 2',            // 严格限制下载 2 秒
-                '-c copy',         // 直接拷贝流，不重新编码，极快
-                '-map 0:v:0'       // 只保留第一个视频流，加快拉流检测
+                '-t 4',            // 💡 严格限制下载时间延长至 4 秒（4K源需要稍长的数据流）
+                '-c copy',         // 直接拷贝流，不重新编码
+                '-map 0:v:0'       // 只保留第一个视频流
             ])
             .output(tempFilePath)
             .on('end', () => {
-                // 下载 2 秒成功后，利用 ffprobe 分析该本地临时文件
+                // 下载成功后，利用 ffprobe 分析该本地临时文件
                 ffmpeg.ffprobe(tempFilePath, (err, metadata) => {
                     clearTimeout(killTimer);
                     if (isResolved) return;
                     isResolved = true;
 
                     if (err || !metadata || !metadata.streams) {
-                        console.log(`❌ 分析下载切片失败: ${streamUrl}`);
+                        console.log(`❌ 分析下载切片失败: ${streamUrl}`, err ? err.message : '');
                         cleanup();
                         return resolve('解析失败');
                     }

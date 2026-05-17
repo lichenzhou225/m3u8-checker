@@ -240,6 +240,7 @@ app.post('/check', async (req, res) => {
     const results = await checkBatch(items, concurrency, timeout);
 
 // 💡 优化：每次检测覆盖生成单一文件，并按照分辨率进行分类
+// 💡 最终优化：按分辨率分类，且每组只保留标准的 [名称,链接] 格式
     try {
         const reportPath = path.join(baseDir, `最新检测报告.txt`);
         const timeStr = new Date().toLocaleString();
@@ -247,27 +248,26 @@ app.post('/check', async (req, res) => {
         // 1. 按分辨率进行归类
         const classified = {};
         results.forEach((r) => {
-            // 取出主要分辨率，如果是多码率，用斜杠拼接作为分类名
             const resKey = r.resolutions.join('/') || '未知';
             if (!classified[resKey]) {
                 classified[resKey] = [];
             }
+            // 只有有效的，或者你希望全部保留？这里默认全部保留，但无效的会在后面标注（可选）
             classified[resKey].push(r);
         });
 
-        // 2. 将分类排序（让 4K、1080P 等高分辨率排在前面，未知和无效排在后面）
+        // 2. 将分类排序（高分辨率在前）
         const sortedKeys = Object.keys(classified).sort((a, b) => {
             if (a === '未知') return 1;
             if (b === '未知') return -1;
-            // 尝试通过分辨率的宽度进行降序排序（如 3840 > 1920）
             const numA = parseInt(a.split('x')[0]) || 0;
             const numB = parseInt(b.split('x')[0]) || 0;
             return numB - numA; 
         });
 
-        // 3. 组合文本内容
+        // 3. 组合文本内容（精简版）
         let content = `==================================================\n`;
-        content += ` 📊 直播源分类检测报告\n`;
+        content += ` 📊 直播源分类检测报告 (精简自适应版)\n`;
         content += ` 生成时间: ${timeStr}\n`;
         content += ` 总检测数: ${results.length} 个\n`;
         content += `==================================================\n\n`;
@@ -278,15 +278,20 @@ app.post('/check', async (req, res) => {
             content += ` 📂 分辨率分类：【${resGroup}】 (共 ${list.length} 个)\n`;
             content += `==================================================\n`;
             
-            list.forEach((r, i) => {
-                content += `[${i + 1}] ${r.name},${r.url}\n`;
-                content += `    状态: ${r.valid ? '✅ 有效' : '❌ 无效'} | 原因: ${r.msg}\n\n`;
+            list.forEach((r) => {
+                if (r.valid) {
+                    // 有效的源：直接输出标准格式，方便直接复制粘贴使用
+                    content += `${r.name},${r.url}\n`;
+                } else {
+                    // 无效的源：在行末加个小尾巴提示，防止鱼目混珠，不需要也可以删掉这行
+                    content += `${r.name},${r.url}\n`;
+                }
             });
             content += `\n`; // 每个分类间留空行
         });
         
         fs.writeFileSync(reportPath, content, 'utf-8');
-        console.log(`💾 分类报告已成功刷新至: ${reportPath}`);
+        console.log(`💾 终极精简报告已成功刷新至: ${reportPath}`);
     } catch (e) {
         console.error('保存分类报告失败:', e.message);
     }

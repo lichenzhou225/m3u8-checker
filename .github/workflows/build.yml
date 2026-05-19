@@ -1,4 +1,4 @@
-name: Build tvm3u8 EXE
+name: Build IPTV Checker
 
 on:
   push:
@@ -7,29 +7,27 @@ on:
 
 jobs:
   build:
+
     runs-on: windows-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Install Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install dependencies
-        # 确保完整安装所有依赖，然后再执行打包
-        run: |
-          npm install
-          npm install -g pkg
+        run: npm install
 
       - name: Build EXE
-        # 直接运行 package.json 里定义好的标准打包脚本
-        run: npm run pkg
+        run: npm run build
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: tvm3u8-windows
-          path: tvm3u8.exe
+          name: IPTV-CHECKER
+          path: dist/

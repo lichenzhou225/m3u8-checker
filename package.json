@@ -3,14 +3,36 @@
   "version": "2.0.0",
   "main": "server.js",
   "type": "commonjs",
+
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build": "pkg ."
   },
+
+  "bin": "server.js",
+
+  "pkg": {
+    "assets": [
+      "public/**/*",
+      "bin/**/*"
+    ],
+
+    "targets": [
+      "node20-win-x64"
+    ],
+
+    "outputPath": "dist"
+  },
+
   "dependencies": {
     "express": "^5.1.0",
     "fluent-ffmpeg": "^2.1.3",
     "multer": "^2.0.0",
     "p-queue": "^8.1.0",
     "unzipper": "^0.12.3"
+  },
+
+  "devDependencies": {
+    "pkg": "^5.8.1"
   }
 }

@@ -114,6 +114,26 @@ const ffprobeExe =
 
 let ffmpegReady = false;
 
+// ===============================
+// 💡 直接探测直播流分辨率和编码
+// ===============================
+async function probeStreamDirect(url) {
+    return new Promise((resolve) => {
+        ffmpeg.ffprobe(url, (err, metadata) => {
+            if (err || !metadata || !metadata.streams) return resolve(null);
+
+            // 找到第一个视频流
+            const video = metadata.streams.find(s => s.codec_type === 'video' && s.width && s.height);
+            if (!video) return resolve(null);
+
+            const codec = video.codec_name || 'unknown';
+
+            // 返回分辨率和编码
+            resolve(`${video.width}x${video.height} | ${codec.toUpperCase()}`);
+        });
+    });
+}
+
 async function ensureFFmpeg() {
 
     if (ffmpegReady) return;
@@ -349,16 +369,19 @@ function downloadAndProbe(
         ffmpeg(streamUrl)
 
             .inputOptions([
-                '-rw_timeout 10000000',
+                '-rw_timeout 15000000',
                 '-fflags nobuffer',
+                '-user_agent Mozilla/5.0',
+                '-reconnect 1',
+                '-reconnect_streamed 1',
+                '-reconnect_delay_max 5',
                 `-probesize ${probeSize}`,
                 `-analyzeduration ${analyzeDuration}`
             ])
 
             .outputOptions([
                 `-t ${duration}`,
-                '-c copy',
-                '-map 0:v:0'
+                '-c copy'
             ])
 
             .output(tempFilePath)
@@ -427,12 +450,33 @@ function downloadAndProbe(
 
 async function getLiveStreamResolutionSmart(streamUrl) {
 
+    // =====================================
+    // 第一阶段：ffprobe直接探测
+    // =====================================
+
+    const direct =
+        await probeStreamDirect(streamUrl);
+
+    if (direct) {
+
+        console.log(
+            '✅ ffprobe直接探测成功:',
+            direct
+        );
+
+        return direct;
+    }
+
+    // =====================================
+    // 第二阶段：快速拉流
+    // =====================================
+
     let result = await downloadAndProbe(
         streamUrl,
-        2,
+        5,
+        10000000,
         5000000,
-        2000000,
-        10000
+        15000
     );
 
     if (
@@ -440,31 +484,52 @@ async function getLiveStreamResolutionSmart(streamUrl) {
         result !== 'FAILED' &&
         result !== 'NO_VIDEO'
     ) {
+
+        console.log(
+            '✅ 快速拉流成功:',
+            result
+        );
+
         return result;
     }
 
+    // =====================================
+    // 第三阶段：深度拉流
+    // =====================================
+
     let result2 = await downloadAndProbe(
         streamUrl,
-        4,
-        15000000,
-        5000000,
-        18000
+        10,
+        30000000,
+        10000000,
+        30000
     );
 
+    if (
+        result2 !== 'TIMEOUT' &&
+        result2 !== 'FAILED' &&
+        result2 !== 'NO_VIDEO'
+    ) {
+
+        console.log(
+            '✅ 深度拉流成功:',
+            result2
+        );
+
+        return result2;
+    }
+
+    // =====================================
+    // 最终失败
+    // =====================================
+
     if (result2 === 'TIMEOUT') {
+
         return '未知 (拉流超时)';
     }
 
-    if (
-        result2 === 'FAILED' ||
-        result2 === 'NO_VIDEO'
-    ) {
-        return '无法检测 (流异常)';
-    }
-
-    return result2;
+    return '无法检测 (无视频流)';
 }
-
 // ==========================================
 // 上传 TXT / M3U
 // ==========================================

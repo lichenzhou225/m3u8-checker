@@ -91,14 +91,20 @@ const upload = multer({
 // ==========================================
 
 // HTTP检测（高并发）
-const validQueue = new PQueue({
-    concurrency: 50
+let validConcurrency = 50;
+// FFmpeg检测（低并发）
+let resolutionConcurrency = 3;
+
+let validQueue = new PQueue({
+    concurrency: validConcurrency
 });
 
-// FFmpeg检测（低并发）
-const resolutionQueue = new PQueue({
-    concurrency: 3
+let resolutionQueue = new PQueue({
+    concurrency: resolutionConcurrency
 });
+
+
+
 
 // ==========================================
 // FFmpeg
@@ -901,6 +907,44 @@ app.post('/save-report', async (req, res) => {
 // 首页
 // ==========================================
 
+// ==========================================
+// 动态修改并发数
+// ==========================================
+
+app.post('/set-concurrency', (req, res) => {
+
+    const {
+        valid = 50,
+        resolution = 3
+    } = req.body;
+
+    validConcurrency =
+        Math.max(1, parseInt(valid));
+
+    resolutionConcurrency =
+        Math.max(1, parseInt(resolution));
+
+    // 重新创建队列
+
+    validQueue = new PQueue({
+        concurrency: validConcurrency
+    });
+
+    resolutionQueue = new PQueue({
+        concurrency: resolutionConcurrency
+    });
+
+    console.log(
+        '✅ 并发已修改:',
+        validConcurrency,
+        resolutionConcurrency
+    );
+
+    res.json({
+        success: true
+    });
+});
+
 app.get('/', (req, res) => {
 
     res.sendFile(
@@ -1055,6 +1099,34 @@ placeholder="名称,链接"
 
 <div class="controls">
 
+<div style="display:flex;gap:10px;align-items:center;">
+
+<label>
+有效性并发:
+</label>
+
+<input
+id="validConcurrency"
+type="number"
+value="80"
+min="1"
+style="width:80px;padding:5px;"
+>
+
+<label>
+分辨率并发:
+</label>
+
+<input
+id="resolutionConcurrency"
+type="number"
+value="5"
+min="1"
+style="width:80px;padding:5px;"
+>
+
+</div>
+
 <button
 class="btn-start"
 onclick="startCheckQueue()"
@@ -1158,6 +1230,36 @@ document
 });
 
 async function startCheckQueue() {
+
+// ==========================================
+// 设置并发
+// ==========================================
+
+const validConcurrency =
+    document.getElementById(
+        'validConcurrency'
+    ).value;
+
+const resolutionConcurrency =
+    document.getElementById(
+        'resolutionConcurrency'
+    ).value;
+
+await fetch('/set-concurrency', {
+
+    method: 'POST',
+
+    headers: {
+        'Content-Type': 'application/json'
+    },
+
+    body: JSON.stringify({
+
+        valid: validConcurrency,
+
+        resolution: resolutionConcurrency
+    })
+});
 
     const rawText =
         document

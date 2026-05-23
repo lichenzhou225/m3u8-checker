@@ -1355,10 +1355,9 @@ await fetch('/set-concurrency', {
         '阶段1：正在检测链接有效性...';
 
     let finished1 = 0;
-
     const validItems = [];
-
-    const VALID_CONCURRENCY = 50;
+    // 动态读取输入框的值，如果读取失败（如被清空）则降级使用默认值 50
+    const VALID_CONCURRENCY = parseInt(document.getElementById('validConcurrency').value) || 50; 
 
     let index1 = 0;
 
@@ -1481,8 +1480,8 @@ await fetch('/set-concurrency', {
         '阶段2：正在检测分辨率...';
 
     let finished2 = 0;
-
-    const RES_CONCURRENCY = 3;
+    // 动态读取输入框的值，如果读取失败则降级使用默认值 3
+    const RES_CONCURRENCY = parseInt(document.getElementById('resolutionConcurrency').value) || 3;
 
     let index2 = 0;
 
